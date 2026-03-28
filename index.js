@@ -13,8 +13,11 @@ const app = express();
 // Middleware
 app.use(morgan('dev'));
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
-  credentials: true,
+  origin: [
+    'http://localhost:3000',
+    'https://darling-axolotl-779482.netlify.app'
+  ],
+  credentials: true
 }));
 // Stripe webhook needs raw body
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
