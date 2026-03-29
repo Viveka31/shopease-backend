@@ -101,14 +101,18 @@ router.post('/forgotpassword', async (req, res) => {
     const resetUrl = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
 
     try {
-      const { subject, html } = emailTemplates.resetPassword(resetUrl);
+      const { subject, html } = emailTemplates.resetPassword(resetUrl, 30);
       await sendEmail({ to: user.email, subject, html });
       res.json({ success: true, message: 'Reset email sent' });
     } catch (emailErr) {
+      console.error('Reset email error:', emailErr.message);
       user.resetPasswordToken = undefined;
       user.resetPasswordExpire = undefined;
       await user.save({ validateBeforeSave: false });
-      res.status(500).json({ success: false, message: 'Email could not be sent' });
+      res.status(500).json({
+        success: false,
+        message: `Email could not be sent: ${emailErr.message}. Check EMAIL_USER, EMAIL_PASS, and Gmail App Password in your environment variables.`,
+      });
     }
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
