@@ -5,6 +5,23 @@ const User = require('../models/User');
 const { protect, sendTokenResponse } = require('../middleware/auth');
 const { sendEmail, emailTemplates } = require('../utils/email');
 
+
+// @route GET /api/auth/test-email  — DEVELOPMENT ONLY, remove before final submission
+// Lets you verify Gmail SMTP works on Render without going through the UI
+router.get('/test-email', async (req, res) => {
+  const { sendEmail } = require('../utils/email');
+  try {
+    await sendEmail({
+      to:      process.env.EMAIL_USER,
+      subject: 'ShopEase — Email Test ✅',
+      html:    '<h2 style="color:#00C2A8;">Email is working!</h2><p>Your Gmail SMTP config on Render is correctly set up.</p>',
+    });
+    res.json({ success: true, message: `Test email sent to ${process.env.EMAIL_USER}` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // @route POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
