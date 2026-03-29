@@ -1,9 +1,9 @@
-const express    = require('express');
-const mongoose   = require('mongoose');
-const cors       = require('cors');
+const express      = require('express');
+const mongoose     = require('mongoose');
+const cors         = require('cors');
 const cookieParser = require('cookie-parser');
-const morgan     = require('morgan');
-const dotenv     = require('dotenv');
+const morgan       = require('morgan');
+const dotenv       = require('dotenv');
 
 dotenv.config();
 
@@ -28,13 +28,16 @@ app.use(cookieParser());
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
+    emailProvider: process.env.BREVO_PASS ? 'Brevo ✅' : 'Gmail (may timeout on Render)',
     env: {
-      NODE_ENV:   process.env.NODE_ENV,
-      EMAIL_USER: process.env.EMAIL_USER ? `${process.env.EMAIL_USER.slice(0,4)}****` : '❌ NOT SET',
-      EMAIL_PASS: process.env.EMAIL_PASS ? `set (${process.env.EMAIL_PASS.length} chars)` : '❌ NOT SET',
-      CLIENT_URL: process.env.CLIENT_URL || '❌ NOT SET',
-      MONGO_URI:  process.env.MONGO_URI  ? '✅ set' : '❌ NOT SET',
-      STRIPE_KEY: process.env.STRIPE_SECRET_KEY ? '✅ set' : '❌ NOT SET',
+      NODE_ENV:    process.env.NODE_ENV,
+      BREVO_USER:  process.env.BREVO_USER  ? `${process.env.BREVO_USER.slice(0,4)}****` : '❌ NOT SET',
+      BREVO_PASS:  process.env.BREVO_PASS  ? `set (${process.env.BREVO_PASS.length} chars)` : '❌ NOT SET',
+      EMAIL_USER:  process.env.EMAIL_USER  ? `${process.env.EMAIL_USER.slice(0,4)}****` : '❌ NOT SET',
+      EMAIL_PASS:  process.env.EMAIL_PASS  ? `set (${process.env.EMAIL_PASS.length} chars)` : '❌ NOT SET',
+      CLIENT_URL:  process.env.CLIENT_URL  || '❌ NOT SET',
+      MONGO_URI:   process.env.MONGO_URI   ? '✅ set' : '❌ NOT SET',
+      STRIPE_KEY:  process.env.STRIPE_SECRET_KEY ? '✅ set' : '❌ NOT SET',
     },
   });
 });
@@ -42,41 +45,69 @@ app.get('/api/health', (req, res) => {
 // ── Email test ── GET /api/test-email?to=your@gmail.com ──────────────────────
 app.get('/api/test-email', async (req, res) => {
   const nodemailer = require('nodemailer');
-  const to = req.query.to || process.env.EMAIL_USER;
+  const to = req.query.to || process.env.BREVO_USER || process.env.EMAIL_USER;
 
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+  if (!to) {
+    return res.status(400).json({ success: false, message: 'Add ?to=your@email.com to the URL' });
+  }
+
+  // Decide which transport to use
+  let transportConfig;
+  let providerName;
+
+  if (process.env.BREVO_PASS) {
+    providerName = 'Brevo';
+    transportConfig = {
+      host: 'smtp-relay.brevo.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.BREVO_USER || process.env.EMAIL_USER,
+        pass: process.env.BREVO_PASS,
+      },
+    };
+  } else if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+    providerName = 'Gmail';
+    transportConfig = {
+      service: 'gmail',
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    };
+  } else {
     return res.status(500).json({
       success: false,
-      message: '❌ EMAIL_USER or EMAIL_PASS not set in Render environment variables',
+      message: '❌ No email credentials set. Add BREVO_USER + BREVO_PASS in Render env vars.',
+      howTo: 'Sign up free at https://app.brevo.com → SMTP & API → SMTP tab → copy credentials',
     });
   }
 
   try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-    });
+    const transporter = nodemailer.createTransport(transportConfig);
+    const from = process.env.EMAIL_FROM
+      || (process.env.BREVO_USER ? `ShopEase <${process.env.BREVO_USER}>` : `ShopEase <${process.env.EMAIL_USER}>`);
 
     const info = await transporter.sendMail({
-      from:    `ShopEase <${process.env.EMAIL_USER}>`,
+      from,
       to,
-      subject: '✅ ShopEase Email Test',
-      html:    '<h2 style="color:#00C2A8">Email is working on Render!</h2><p>Gmail SMTP is correctly configured.</p>',
+      subject: `✅ ShopEase Email Test via ${providerName}`,
+      html: `<h2 style="color:#00C2A8">Email is working! ✅</h2>
+             <p>Provider: <strong>${providerName}</strong></p>
+             <p>This confirms your email config on Render is correct.</p>`,
     });
 
-    res.json({ success: true, message: `✅ Email sent to ${to}`, messageId: info.messageId });
+    res.json({
+      success:  true,
+      provider: providerName,
+      message:  `✅ Test email sent to ${to} via ${providerName}`,
+      messageId: info.messageId,
+    });
   } catch (err) {
     res.status(500).json({
-      success: false,
-      error: err.message,
-      fix: err.message.includes('Invalid login') || err.message.includes('Username and Password')
-        ? '👉 Wrong App Password. Go to myaccount.google.com/apppasswords → generate new → paste in Render (no spaces)'
-        : err.message.includes('timeout') || err.message.includes('ETIMEDOUT')
-        ? '👉 Timeout — hit this URL again in 10 seconds (Render cold start)'
-        : '👉 Check Render logs',
+      success:  false,
+      provider: providerName,
+      error:    err.message,
+      fix: providerName === 'Brevo'
+        ? '👉 Check BREVO_USER (your Brevo login email) and BREVO_PASS (SMTP key from brevo.com → SMTP & API → SMTP tab) in Render env vars'
+        : '👉 Gmail is blocked on Render. Switch to Brevo: sign up free at https://app.brevo.com',
     });
   }
 });
@@ -110,8 +141,8 @@ mongoose
     console.log('✅ MongoDB connected');
     app.listen(PORT, () => {
       console.log(`🚀 Server on port ${PORT}`);
-      console.log(`📧 Email: ${process.env.EMAIL_USER || '❌ NOT SET'}`);
-      console.log(`🔑 Pass:  ${process.env.EMAIL_PASS ? `set (${process.env.EMAIL_PASS.length} chars)` : '❌ NOT SET'}`);
+      console.log(`📧 Email provider: ${process.env.BREVO_PASS ? 'Brevo ✅' : 'Gmail (may fail on Render)'}`);
+      console.log(`📧 Email user: ${process.env.BREVO_USER || process.env.EMAIL_USER || '❌ NOT SET'}`);
     });
   })
   .catch(err => {
@@ -120,4 +151,3 @@ mongoose
   });
 
 module.exports = app;
-

@@ -1,79 +1,87 @@
 const nodemailer = require('nodemailer');
 
 /**
- * Email Transport Strategy:
- * 
- * Render free tier BLOCKS port 587 (STARTTLS).
- * Gmail port 465 (SSL/TLS) works fine on Render.
- * 
+ * ShopEase Email Utility
+ *
+ * Uses Brevo (formerly Sendinblue) SMTP — free 300 emails/day
+ * Works perfectly on Render (no port blocking unlike Gmail SMTP)
+ * Emails arrive in real Gmail/any inbox ✅
+ *
  * Required env vars:
- *   EMAIL_USER = yourname@gmail.com
- *   EMAIL_PASS = 16-char Gmail App Password (NOT your Gmail login password)
- *               Get it: Google Account → Security → 2-Step Verification → App Passwords
+ *   BREVO_USER  = your Brevo login email (the email you signed up with)
+ *   BREVO_PASS  = your Brevo SMTP key (from Brevo dashboard → SMTP & API → SMTP)
+ *   EMAIL_FROM  = ShopEase <your@email.com>
+ *
+ * Signup free: https://app.brevo.com
  */
 
 const createTransporter = () => {
-  const user = process.env.EMAIL_USER;
-  const pass = process.env.EMAIL_PASS;
-
-  if (!user || !pass) {
-    throw new Error(
-      'EMAIL_USER and EMAIL_PASS must be set in environment variables. ' +
-      'EMAIL_PASS must be a Gmail App Password (16 chars), not your regular Gmail password.'
-    );
+  // ── Brevo SMTP (recommended for Render — no port blocking) ──────────────────
+  if (process.env.BREVO_PASS) {
+    return nodemailer.createTransport({
+      host: 'smtp-relay.brevo.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.BREVO_USER || process.env.EMAIL_USER,
+        pass: process.env.BREVO_PASS,
+      },
+    });
   }
 
-  return nodemailer.createTransport({
-    service: 'gmail',   // ← use "service" instead of host/port — nodemailer knows Gmail's settings
-    auth: {
-      user,
-      pass,
-    },
-    // Extended timeouts for Render cold starts
-    connectionTimeout: 30000,
-    greetingTimeout:   15000,
-    socketTimeout:     30000,
-  });
+  // ── Gmail fallback (may timeout on Render free tier) ────────────────────────
+  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+    console.warn('⚠️  Using Gmail SMTP — may timeout on Render. Consider switching to Brevo.');
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+      connectionTimeout: 30000,
+      socketTimeout:     30000,
+    });
+  }
+
+  throw new Error(
+    'No email transport configured. Set BREVO_PASS (recommended) or EMAIL_USER + EMAIL_PASS in env vars.'
+  );
 };
 
 const sendEmail = async ({ to, subject, html, text }) => {
-  const transporter = createTransporter(); // throws if env vars missing
+  const transporter = createTransporter();
+  const from = process.env.EMAIL_FROM
+    || (process.env.BREVO_USER ? `ShopEase <${process.env.BREVO_USER}>` : null)
+    || (process.env.EMAIL_USER ? `ShopEase <${process.env.EMAIL_USER}>` : 'ShopEase <noreply@shopease.com>');
 
   try {
-    const info = await transporter.sendMail({
-      from:    process.env.EMAIL_FROM || `ShopEase <${process.env.EMAIL_USER}>`,
-      to,
-      subject,
-      html,
-      text: text || subject,
-    });
-    console.log(`✅ Email sent to ${to} | MessageID: ${info.messageId}`);
+    const info = await transporter.sendMail({ from, to, subject, html, text: text || subject });
+    console.log(`✅ Email sent to ${to} | ID: ${info.messageId}`);
     return info;
   } catch (err) {
-    console.error(`❌ Email to ${to} failed: ${err.message}`);
+    console.error(`❌ Email failed: ${err.message}`);
 
-    // Give a helpful error message based on the error type
-    if (err.message.includes('Invalid login') || err.message.includes('Username and Password')) {
+    if (err.message.includes('Invalid login') || err.message.includes('Username and Password') || err.message.includes('535')) {
       throw new Error(
-        'Gmail authentication failed. Make sure EMAIL_PASS is a Gmail App Password ' +
-        '(16 characters, no spaces), not your regular Gmail password. ' +
-        'Generate one at: Google Account → Security → 2-Step Verification → App Passwords'
+        'Email authentication failed. ' +
+        (process.env.BREVO_PASS
+          ? 'Check BREVO_USER and BREVO_PASS in Render env vars.'
+          : 'EMAIL_PASS must be a Gmail App Password (16 chars). Get it: Google Account → Security → App Passwords.')
       );
     }
-    if (err.message.includes('timeout') || err.message.includes('ETIMEDOUT')) {
+    if (err.message.includes('timeout') || err.message.includes('ETIMEDOUT') || err.message.includes('ECONNREFUSED')) {
       throw new Error(
-        'Email server connection timed out. This sometimes happens on the first request ' +
-        'after Render cold start. Please try again in a few seconds.'
+        'Email server connection timed out. ' +
+        (process.env.BREVO_PASS
+          ? 'Check that BREVO_USER and BREVO_PASS are correct in Render.'
+          : 'Render is blocking Gmail SMTP. Switch to Brevo (free): https://app.brevo.com')
       );
-    }
-    if (err.message.includes('self signed') || err.message.includes('certificate')) {
-      throw new Error('SSL certificate error connecting to Gmail. Contact support.');
     }
     throw err;
   }
 };
 
-// ─── Templates ───────────────────────────────────────────────────────────────
+// ─── Email Templates ──────────────────────────────────────────────────────────
 const emailTemplates = {
   welcome: (name) => ({
     subject: 'Welcome to ShopEase! 🛍️',
@@ -88,7 +96,8 @@ const emailTemplates = {
           <p style="color:#555;line-height:1.7;margin:0 0 24px;">
             Your ShopEase account is ready. Explore thousands of fashion items and enjoy seamless shopping.
           </p>
-          <a href="${process.env.CLIENT_URL || '#'}" style="display:inline-block;background:#00C2A8;color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;">
+          <a href="${process.env.CLIENT_URL || '#'}"
+             style="display:inline-block;background:#00C2A8;color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;">
             Start Shopping →
           </a>
         </div>
@@ -145,7 +154,7 @@ const emailTemplates = {
             Didn't request this? Ignore this email — your password won't change.
           </p>
           <p style="color:#bbb;font-size:12px;margin-top:8px;word-break:break-all;">
-            Link: ${resetUrl}
+            Or paste this link: ${resetUrl}
           </p>
         </div>
         <div style="padding:24px 40px;text-align:center;border-top:1px solid #eee;">
