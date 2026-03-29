@@ -20,8 +20,8 @@ const createTransporter = () => {
   if (process.env.BREVO_PASS) {
     return nodemailer.createTransport({
       host: 'smtp-relay.brevo.com',
-      port: 587,
-      secure: false,
+      port: 465,
+      secure: true,
       auth: {
         user: process.env.BREVO_USER || process.env.EMAIL_USER,
         pass: process.env.BREVO_PASS,
