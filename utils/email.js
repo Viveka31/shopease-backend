@@ -1,94 +1,78 @@
-const nodemailer = require('nodemailer');
+const https = require('https');
 
 /**
- * ShopEase Email Utility
- *
- * Uses Brevo (formerly Sendinblue) SMTP — free 300 emails/day
- * Works perfectly on Render (no port blocking unlike Gmail SMTP)
- * Emails arrive in real Gmail/any inbox ✅
- *
- * Required env vars:
- *   BREVO_USER  = your Brevo login email (the email you signed up with)
- *   BREVO_PASS  = your Brevo SMTP key (from Brevo dashboard → SMTP & API → SMTP)
- *   EMAIL_FROM  = ShopEase <your@email.com>
- *
- * Signup free: https://app.brevo.com
+ * ShopEase Email — uses Brevo REST API (not SMTP)
+ * Render blocks ALL outbound SMTP ports (587, 465, 25)
+ * Brevo's HTTPS API works perfectly on Render — no port issues
+ * Free: 300 emails/day, real inbox delivery
  */
 
-const createTransporter = () => {
-  // ── Brevo SMTP (recommended for Render — no port blocking) ──────────────────
-  if (process.env.BREVO_PASS) {
-    return nodemailer.createTransport({
-      host: 'smtp-relay.brevo.com',
-      port: 465,
-      secure: true,
-      auth: {
-        user: process.env.BREVO_USER || process.env.EMAIL_USER,
-        pass: process.env.BREVO_PASS,
-      },
-    });
-  }
-
-  // ── Gmail fallback (may timeout on Render free tier) ────────────────────────
-  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-    console.warn('⚠️  Using Gmail SMTP — may timeout on Render. Consider switching to Brevo.');
-    return nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-      connectionTimeout: 30000,
-      socketTimeout:     30000,
-    });
-  }
-
-  throw new Error(
-    'No email transport configured. Set BREVO_PASS (recommended) or EMAIL_USER + EMAIL_PASS in env vars.'
-  );
-};
-
 const sendEmail = async ({ to, subject, html, text }) => {
-  const transporter = createTransporter();
-  const from = process.env.EMAIL_FROM
-    || (process.env.BREVO_USER ? `ShopEase <${process.env.BREVO_USER}>` : null)
-    || (process.env.EMAIL_USER ? `ShopEase <${process.env.EMAIL_USER}>` : 'ShopEase <noreply@shopease.com>');
+  const apiKey = process.env.BREVO_API_KEY;
 
-  try {
-    const info = await transporter.sendMail({ from, to, subject, html, text: text || subject });
-    console.log(`✅ Email sent to ${to} | ID: ${info.messageId}`);
-    return info;
-  } catch (err) {
-    console.error(`❌ Email failed: ${err.message}`);
-
-    if (err.message.includes('Invalid login') || err.message.includes('Username and Password') || err.message.includes('535')) {
-      throw new Error(
-        'Email authentication failed. ' +
-        (process.env.BREVO_PASS
-          ? 'Check BREVO_USER and BREVO_PASS in Render env vars.'
-          : 'EMAIL_PASS must be a Gmail App Password (16 chars). Get it: Google Account → Security → App Passwords.')
-      );
-    }
-    if (err.message.includes('timeout') || err.message.includes('ETIMEDOUT') || err.message.includes('ECONNREFUSED')) {
-      throw new Error(
-        'Email server connection timed out. ' +
-        (process.env.BREVO_PASS
-          ? 'Check that BREVO_USER and BREVO_PASS are correct in Render.'
-          : 'Render is blocking Gmail SMTP. Switch to Brevo (free): https://app.brevo.com')
-      );
-    }
-    throw err;
+  if (!apiKey) {
+    throw new Error(
+      'BREVO_API_KEY not set. Get it free: brevo.com → SMTP & API → API Keys tab → Create API Key'
+    );
   }
+
+  const payload = JSON.stringify({
+    sender:   { name: 'ShopEase', email: process.env.BREVO_SENDER || process.env.EMAIL_USER || 'noreply@shopease.com' },
+    to:       [{ email: to }],
+    subject,
+    htmlContent: html || `<p>${text || subject}</p>`,
+  });
+
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.brevo.com',
+      path:     '/v3/smtp/email',
+      method:   'POST',
+      headers: {
+        'accept':       'application/json',
+        'content-type': 'application/json',
+        'api-key':      apiKey,
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          const result = JSON.parse(data);
+          console.log(`✅ Email sent to ${to} | MessageID: ${result.messageId}`);
+          resolve(result);
+        } else {
+          console.error(`❌ Brevo API error ${res.statusCode}: ${data}`);
+          reject(new Error(`Brevo API error ${res.statusCode}: ${data}`));
+        }
+      });
+    });
+
+    req.on('error', (err) => {
+      console.error(`❌ Email request failed: ${err.message}`);
+      reject(err);
+    });
+
+    req.setTimeout(15000, () => {
+      req.destroy();
+      reject(new Error('Brevo API request timed out'));
+    });
+
+    req.write(payload);
+    req.end();
+  });
 };
 
-// ─── Email Templates ──────────────────────────────────────────────────────────
+// ─── Templates ────────────────────────────────────────────────────────────────
 const emailTemplates = {
   welcome: (name) => ({
     subject: 'Welcome to ShopEase! 🛍️',
     html: `
       <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;">
         <div style="background:linear-gradient(135deg,#2C3E50,#1a252f);padding:40px;text-align:center;">
-          <h1 style="color:#00C2A8;margin:0;font-size:32px;letter-spacing:-1px;">ShopEase</h1>
+          <h1 style="color:#00C2A8;margin:0;font-size:32px;">ShopEase</h1>
           <p style="color:rgba(255,255,255,0.7);margin:8px 0 0;font-size:14px;">Fashion. Delivered.</p>
         </div>
         <div style="padding:40px;background:#f8f9fa;">
